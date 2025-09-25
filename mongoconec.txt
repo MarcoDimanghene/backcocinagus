@@ -1,0 +1,1 @@
+mongodb+srv://m4rc0:n4lACj52RiJuMLP7@guscocina.bf77tyz.mongodb.net/
