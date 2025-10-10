@@ -3,7 +3,7 @@ import { validarRol } from "../middleware/validarRol";
 import { recolectarErrores } from "../middleware/recolectarErrores";
 import { Router } from "express";
 import { check } from 'express-validator';
-import { assignTask, createTask, deleteTask, getTasks, updateTaskState, updateTask, getTaskById } from "../controllers/tareas";
+import { createTarea, getAllTasks, getTareaById, getTasksDay, takeTarea, updateTareaState, cloneTarea, updateTareaDetails, assignTarea, deleteTarea } from "../controllers/tareas";
 
 
 const router = Router();
@@ -16,54 +16,88 @@ router.post("/create-tarea",
         check("menu_id", "El ID del menú asociado es obligatorio y debe ser un ID válido de MongoDB").isMongoId(),
         check("estado", "El estado de la tarea debe ser uno de los siguientes valores: 'asignada', 'pendiente', 'en_proceso', 'terminado'").optional().isIn(['asignada', 'pendiente', 'en_proceso', 'terminado']),
         recolectarErrores
-    ], createTask
+    ],
+    createTarea
 );
-router.patch("/assign-tarea/:id",
+router.get("/get-tarea-day",
     [
         validarJWT,
-        validarRol('admin', 'regente'),
-        check("responsable", "El ID del usuario responsable es obligatorio y debe ser un ID válido de MongoDB").isMongoId(),
+        check("date", "La fecha es obligatoria y debe ser una fecha válida").isDate(),
         recolectarErrores
-    ], assignTask
+    ],
+    getTasksDay
 );
-router.get("/get-tareas",
-    [
-        validarJWT,
-        recolectarErrores
-    ], getTasks
-);
-router.get("/get-tarea/:id",
+
+router.patch("/take-tarea/:id",
     [
         validarJWT,
         check("id", "El ID de la tarea es obligatorio y debe ser un ID válido de MongoDB").isMongoId(),
         recolectarErrores
-    ], getTaskById
+    ],
+    takeTarea
 );
-router.patch("/update-tareaState/:id",
+
+router.patch("/updateState-tarea/:id",
     [
         validarJWT,
         check("id", "El ID de la tarea es obligatorio y debe ser un ID válido de MongoDB").isMongoId(),
         check("estado", "El estado de la tarea es obligatorio y debe ser uno de los siguientes valores: 'asignada', 'pendiente', 'en_proceso', 'terminado'").isIn(['asignada', 'pendiente', 'en_proceso', 'terminado']),
         recolectarErrores
-    ], updateTaskState
+    ],
+    updateTareaState
 );
-router.patch("/update-tarea/:id",
+
+
+router.get("/get-tareas/id",
     [
         validarJWT,
-        validarRol('admin', 'regente'),
-        check("id", "El ID del cocinero es obligatorio y debe ser un ID válido de MongoDB").isMongoId(),
-        check("nombre", "El nombre de la tarea es obligatorio").optional().notEmpty(),
         recolectarErrores
-    ], updateTask
-
+    ],
+    getTareaById
 );
-router.delete("/delete-tarea",
+
+router.get("/get-tareas",
+    [
+        validarJWT,
+        recolectarErrores
+    ],
+    getAllTasks
+)
+router.post("/clonetask/:id",
     [
         validarJWT,
         validarRol('admin', 'regente'),
         check("id", "El ID de la tarea es obligatorio y debe ser un ID válido de MongoDB").isMongoId(),
         recolectarErrores
-    ], deleteTask
+    ],
+    cloneTarea
+);
+router.patch("/update-detalle-tarea/:id",
+    [
+        validarJWT,
+        validarRol('admin', 'regente'),
+        check("id", "El ID de la tarea es obligatorio y debe ser un ID válido de MongoDB").isMongoId(),
+        recolectarErrores
+    ],
+    updateTareaDetails
+);
+router.patch("/assign-tarea/:id",
+    [
+        validarJWT,
+        validarRol('admin', 'regente'),
+        check("id", "El ID de la tarea es obligatorio y debe ser un ID válido de MongoDB").isMongoId(),
+        recolectarErrores
+    ],
+    assignTarea
+);
+router.delete("/delete-tarea/:id",
+    [
+        validarJWT,
+        validarRol('admin', 'regente'),
+        check("id", "El ID de la tarea es obligatorio y debe ser un ID válido de MongoDB").isMongoId(),
+        recolectarErrores
+    ],
+    deleteTarea
 );
 
 export default router;

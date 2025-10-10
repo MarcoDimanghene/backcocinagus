@@ -1,50 +1,134 @@
-import { Request, Response } from "express";
+import { Request, Response } from 'express';
 import Tarea from '../models/tarea';
 import Menu from '../models/menu';
-import User from '../models/user';
+import { Types } from 'mongoose';
+import { IUser } from '../models/user';
+import { populate } from 'dotenv';
 
-export const createTask = async (req: Request, res: Response) => {
-    const { nombre, descripcion, menu_id, estado, responsable } = req.body;
+interface IRequest {
+    uid?: string;
+    usuario?: IUser;
+    query: any;
+    params: any;
+    body: any;
+}
+
+//mantenimiento
+//purga de tareas antiguas
+
+const purgeOldTasks = async (): Promise<void> => {
+    const sixtyDaysAgo = new Date();
+    sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
+    
     try {
-        // 1. Crear la nueva tarea en la base de datos
+        const result = await Tarea.deleteMany({ 
+            createdAt: { $lt: sixtyDaysAgo }
+        });
+        console.log(`Purgadas ${result.deletedCount} tareas antiguas.`);
+
+    } catch (error) {
+        console.error("Error purgando tareas antiguas:", error);
+    }
+};
+
+//  Marca las tareas como 'VENCIDA' si su fecha de ejecución ya pasó y su estado no es 'TERMINADO' o 'CANCELADA'
+const validateAndSetExpired = async (userId: string): Promise<void> => {
+    const today = new Date();
+    // Establecer la hora a medianoche de hoy (00:00:00) para incluir todo el día anterior
+    today.setHours(0, 0, 0, 0); 
+    
+    try {
+        const result = await Tarea.updateMany(
+            {
+                fecha_ejecucion: { $lt: today }, // Si la fecha de ejecución es anterior a hoy
+                estado: { $in: ['PENDIENTE', 'ASIGNADA', 'EN_PROCESO'] } // Y no está terminada/cancelada
+            },
+            {
+                estado: 'VENCIDA',
+                responsable: userId // Opcional: Asignar al usuario que generó el cambio (Admin/Regente)
+            }
+        );
+
+        console.log(`[Vencimiento] Tareas marcadas como VENCIDA: ${result.modifiedCount}`);
+
+    } catch (error) {
+        console.error('[Error de Vencimiento] No se pudieron marcar tareas vencidas:', error);
+    }
+};
+// ===============================================
+// CONTROLADORES CRUD
+// ===============================================
+
+//1. CREAR TAREA (Template o Independiente)
+export const createTarea = async (req: Request & IRequest, res: Response) => {
+    const { nombre, descripcion, menu_id, fecha_ejecucion, responsable, prioridad } = req.body;
+    const userId = req.uid;
+    try {
         const nuevaTarea = new Tarea({
             nombre,
             descripcion,
-            menu_id,
-            estado,
-            responsable
+            menu_id, 
+            fecha_ejecucion: new Date(fecha_ejecucion),
+            responsable,
+            prioridad,
+            // Establecer el estado inicial
+            estado: responsable ? 'ASIGNADA' : 'PENDIENTE'
         });
-        await nuevaTarea.save();
 
-        // 2. Encontrar el menú y actualizar su campo 'tarea'
-        await Menu.findByIdAndUpdate(
-            menu_id,
-            { $push: { tarea: nuevaTarea._id } }, // Usamos $push para agregar el ID de la nueva tarea al array
-            { new: true, useFindAndModify: false }
-        );
-
+        const tareaGuardada = await nuevaTarea.save();
+        // Si se proporciona menu_id, asociar la tarea al array tareas_base del Menú
+        if (menu_id) {
+            await Menu.findByIdAndUpdate(
+                menu_id,
+                { $push: { tareas_base: nuevaTarea._id } }, 
+                { new: true }
+            );
+        }
         res.status(201).json({
             ok: true,
-            msg: "Tarea creada y asociada al menú correctamente",
+            msg: "Tarea creada exitosamente.",
             tarea: nuevaTarea
         });
+    
     } catch (error) {
         console.error(error);
         res.status(500).json({
             ok: false,
-            msg: "Error al crear la tarea. Hable con el administrador."
+            msg: 'Error al crear la tarea. Hable con el administrador.'
         });
     }
-};
-export const getTasks = async (req: Request, res: Response) => {
+}
+
+// 2. OBTENER TAREAS DEL DÍA (Ejecuta Purgado y Vencimiento)
+export const getTasksDay = async (req: IRequest, res: Response) => {
+    const dateQuery = req.query.date as unknown as Date;
+    const userId = req.uid as string;
     try {
-        const tareas = await Tarea.find()
-            .populate('menu_id', 'nombre descripcion')
-            .populate('responsable', 'username rol');
+        // Ejecutar mantenimiento antes de obtener las tareas
+        await purgeOldTasks();
+        await validateAndSetExpired(userId);
+        // Construir el filtro de fecha
+        const startOfDay = new Date(dateQuery);
+        startOfDay.setHours(0, 0, 0, 0);
+
+        const endOfDay = new Date(dateQuery);
+        endOfDay.setHours(23, 59, 59, 999);
+
+        const tareas = await Tarea.find({
+            fecha_ejecucion: {
+                $gte: startOfDay,
+                $lte: endOfDay
+            }
+        })
+        .populate('responsable', 'username rol')
+        .populate('menu_id', 'nombre')
+        .sort({ prioridad: -1, nombre: 1 }); 
+
         res.status(200).json({
             ok: true,
             tareas
         });
+
     } catch (error) {
         console.error(error);
         res.status(500).json({
@@ -53,17 +137,20 @@ export const getTasks = async (req: Request, res: Response) => {
         });
     }
 }
-export const getTaskById = async (req: Request, res: Response) => {
-    const { id } = req.params; 
+
+// 3. OBTENER TAREA POR ID
+export const getTareaById = async (req: IRequest, res: Response) => {
+    const tareaId = req.params;
     try {
-        const tarea = await Tarea.findById(id)
-            .populate('menu_id', 'nombre descripcion')
-            .populate('responsable', 'username rol');
+        const tarea = await Tarea.findById(tareaId)
+            .populate('responsable', 'username rol')
+            .populate('menu_id', 'nombre descripcion');
         if (!tarea) {
-            return res.status(404).json({
+            res.status(404).json({
                 ok: false,
-                msg: 'Tarea no encontrada'
+                msg: 'Tarea no encontrada.'
             });
+            return;
         }
         res.status(200).json({
             ok: true,
@@ -78,34 +165,70 @@ export const getTaskById = async (req: Request, res: Response) => {
     }
 }
 
-export const updateTaskState = async (req: Request, res: Response) => {
+// 4. TOMAR TAREA (Asignación rápida)
+export const takeTarea = async (req: IRequest, res: Response) => {
     const { id } = req.params;
-    const { estado } = req.body;
+    const userId = req.uid as string;
     try {
-        const taskToUpdate = await Tarea.findById(id);
-        if (!taskToUpdate) {
-            return res.status(404).json({
+        const tarea = await Tarea.findById(id);
+        if (!tarea) {
+            res.status(404).json({
                 ok: false,
-                msg: 'Tarea no encontrada'
+                msg: 'Tarea no encontrada.'
             });
-        }
-        taskToUpdate.estado = estado;
-        if (estado === 'en_proceso') {
-            taskToUpdate.hora_inicio = new Date();
-        }
-
-        if (estado === 'terminado') {
-            taskToUpdate.hora_fin = new Date();
-        }
-        
-        const tareaActualizada = await taskToUpdate.save();
-        
+            return;
+        };
+        if (tarea.estado !== 'PENDIENTE') {
+            res.status(400).json({
+                ok: false,
+                msg: 'La tarea ya se encuentra asignada o no está en estado PENDIENTE.'
+            });
+            return;
+        };
+        const tareaTomada = await Tarea.findByIdAndUpdate(
+            id,
+            { estado: 'ASIGNADA', responsable: userId },
+            { new: true }
+        ).populate('responsable', 'username');
         res.status(200).json({
             ok: true,
-            msg: 'Estado de la tarea actualizado correctamente',
-            tarea: tareaActualizada
+            msg: 'Tarea tomada exitosamente.',
+            tarea: tareaTomada
         });
 
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({
+            ok: false,
+            msg: 'Error al tomar la tarea. Hable con el administrador.'
+        });
+    }
+}
+
+// 5. ACTUALIZAR ESTADO DE TAREA (EN_PROCESO, TERMINADO, CANCELADA)
+export const updateTareaState = async (req: IRequest, res: Response) => {
+    const { id } = req.params;
+    const { estado } = req.body;
+    const userId = req.uid as string;
+    try {
+        const tarea = await Tarea.findById(id);
+        if (!tarea) {
+            res.status(404).json({
+                ok: false,
+                msg: 'Tarea no encontrada.'
+            });
+            return;
+        }
+        const updateTask = await Tarea.findByIdAndUpdate(
+            id,
+            { estado, responsable: userId },
+            { new: true }
+        ).populate('responsable', 'username');
+        res.status(200).json({
+            ok: true,
+            msg: 'Estado de la tarea actualizado exitosamente.',
+            tarea: updateTask
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({
@@ -113,28 +236,181 @@ export const updateTaskState = async (req: Request, res: Response) => {
             msg: 'Error al actualizar el estado de la tarea. Hable con el administrador.'
         });
     }
-};
+}
 
-export const updateTask = async (req: Request, res: Response) => {
-    const { id } = req.params;
-    const { nombre, descripcion } = req.body;
-    try {
-        const updatedFields: any = {};
-        if(nombre) updatedFields.nombre = nombre;
-        if(descripcion) updatedFields.descripcion = descripcion;
+// 6. OBTENER LISTADO GENERAL DE TAREAS
+export const getAllTasks = async (req: IRequest, res: Response) => {
+    const { estado, responsable, fecha_inicio, fecha_fin } = req.query;
 
-        const taskToUpdate = await Tarea.findByIdAndUpdate(
-            id,
-            updatedFields,
-            { new: true } // Para retornar el documento actualizado
-        )
-        if (!taskToUpdate) {
-            return res.status(404).json({
+    const queryFilter: any = {};
+
+    if (estado) {
+        queryFilter.estado = estado;
+    }
+    if (responsable) {
+        if (Types.ObjectId.isValid(responsable as string)) {
+            queryFilter.responsable = responsable;
+        } else {
+            return res.status(400).json({
                 ok: false,
-                msg: 'Tarea no encontrada'
+                msg: 'El ID del responsable no es válido.'
             });
         }
+    }
+    //FILTROS POR RANGO DE FECHAS
+    const dateQuery: any = {};
+    if (fecha_inicio) {
+        dateQuery.$gte = new Date(fecha_inicio as string);
+    }
+    if (fecha_fin) {
+        let end = new Date(fecha_fin as string);
+        end.setHours(23, 59, 59, 999);
+        dateQuery.$lte = end;
+    }
+    if (Object.keys(dateQuery).length > 0) {
+        // Aplicar el filtro de rango de fechas al campo 'fecha' de la tarea
+        queryFilter.fecha_ejecucion = dateQuery;
+    }
+    try {
+        // Encontrar tareas con posibles filtros, poblando referencias y ordenando
+        const tareas = await Tarea.find(queryFilter)
+            .populate('responsable', 'username rol')
+            .populate('menu_id', 'nombre')
+            .sort({ fecha_ejecucion: -1, prioridad: -1, nombre: 1 });
+        res.json({
+            ok: true,
+            total: tareas.length,
+            tareas
+        });
 
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({
+            ok: false,
+            msg: 'Error al obtener las tareas. Hable con el administrador.'
+        });
+    }
+}
+// 7. REPROGRAMAR / CLONAR TAREA (Generar copias en otras fechas)
+export const cloneTarea = async (req: IRequest, res: Response) => {
+    const { id } = req.params;
+    const { fecha_ejecucion, responsableId } = req.body;
+
+    const {
+        nombre: newNombre,
+        descripcion: newDescripcion,
+        prioridad: newPrioridad
+    } = req.body;
+
+    try {
+        const tareaBase = await Tarea.findById(id);
+        if (!tareaBase) {
+            res.status(404).json({
+                ok: false,
+                msg: 'Tarea original no encontrada.'
+            });
+            return;
+        }
+        if (!fecha_ejecucion || fecha_ejecucion.length === 0) {
+            res.status(400).json({
+                ok: false,
+                msg: 'La fecha de ejecución es requerida.'
+            });
+            return;
+        }
+        const nuevasTareas: any[] = []
+        for (const fecha of fecha_ejecucion) {
+            const nuevaFecha = new Date(fecha);
+            
+            // Lógica de sobreescritura: Usar el valor nuevo si está definido (no nulo, no undefined, no vacío), 
+            // sino usar el valor de la tarea plantilla (tareaBase).
+            // ¡FIX! Usamos el operador "!" para indicar a TypeScript que tareaBase no es nulo aquí.
+            const finalNombre = newNombre || tareaBase!.nombre;
+            const finalDescripcion = newDescripcion || tareaBase!.descripcion;
+            // La prioridad debe ser manejada con cuidado si es un número, usamos nullish coalescing
+            const finalPrioridad = newPrioridad ?? tareaBase!.prioridad;
+            
+            // 1. Clonar la tarea base, aplicando los overrides
+            const nuevaTarea = new Tarea({
+                nombre: finalNombre,
+                descripcion: finalDescripcion,
+                fecha_ejecucion: nuevaFecha,
+                responsable: responsableId || undefined, 
+                prioridad: finalPrioridad,
+                // Reiniciar estado y horas
+                estado: responsableId ? 'ASIGNADA' : 'PENDIENTE', 
+                hora_inicio: undefined,
+                hora_fin: undefined,
+                createdAt: new Date(),
+                updatedAt: new Date()
+            });
+
+            nuevasTareas.push(nuevaTarea);
+        }
+
+        const tareasClonadas = await Tarea.insertMany(nuevasTareas);
+
+        // Si se proporcionó menu_id (ya sea nuevo o de la tarea base), asociar las nuevas tareas al menú
+        res.status(201).json({
+            ok: true,
+            msg: `${tareasClonadas.length} tareas clonadas y programadas exitosamente.`,
+            tareas: tareasClonadas
+        });
+        } catch (error) {
+        console.error(error);
+        res.status(500).json({
+            ok: false,
+            msg: 'Error al clonar la tarea. Hable con el administrador.'
+        });
+    }
+}
+
+// 8. ACTUALIZAR DETALLES DE TAREA
+export const updateTareaDetails = async (req: IRequest, res: Response) => {
+    const { id } = req.params;
+    const updateFields = req.body;
+    if (!Types.ObjectId.isValid(id)) {
+        res.status(400).json({
+            ok: false,
+            msg: 'ID de tarea no válido.'
+        });
+        return;
+    }
+    // Lógica para actualizar hora_fin si pasa a TERMINADO
+    if (updateFields.estado === 'TERMINADO') {
+        updateFields.hora_fin = new Date();
+    }
+    // Lógica para cambiar a ASIGNADA si se asigna un responsable
+    if (updateFields.responsable) {
+        if (!Types.ObjectId.isValid(updateFields.responsable)) {
+            return res.status(400).json({
+                ok: false,
+                msg: 'ID de responsable no válido.'
+            });
+        }
+        updateFields.estado = updateFields.estado || 'ASIGNADA';
+    }
+    try {
+        const tareaActualizada = await Tarea.findByIdAndUpdate(
+            id,
+            updateFields,
+            { new: true }
+        )
+        .populate('responsable', 'nombre')
+        .populate('menu_id', 'nombre');
+
+        if (!tareaActualizada) {
+            res.status(404).json({
+                ok: false,
+                msg: 'Tarea no encontrada.'
+            });
+            return;
+        }
+        res.status(200).json({
+            ok: true,
+            msg: 'Tarea actualizada exitosamente.',
+            tarea: tareaActualizada
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({
@@ -144,43 +420,23 @@ export const updateTask = async (req: Request, res: Response) => {
     }
 }
 
-export const assignTask = async (req: Request, res: Response) => {
+// 9. ASIGNAR TAREA A UN RESPONSABLE
+export const assignTarea = async (req: IRequest, res: Response) => {
     const { id } = req.params;
     const { responsableId } = req.body;
-    try {
-        const tarea = await Tarea.findById(id);
-        if (!tarea) {
-            res.status(404).json({
-                ok: false,
-                msg: 'Tarea no encontrada'
-            });
-            return;
-        }
-        if (tarea.responsable){
-            res.status(400).json({
-                ok: false,
-                msg: 'La tarea ya tiene un responsable asignado'
-            });
-            return;
-        }
-        // Verificar que el usuario existe
-        const usuario = await User.findById(responsableId);
-        if (!usuario) {
-            res.status(404).json({
-                ok: false,
-                msg: 'Usuario no encontrado'
-            });
-            return;
-        }
-        tarea.responsable = responsableId;
-        tarea.estado = 'asignada';
-        await tarea.save();
-        res.status(200).json({
-            ok: true,
-            msg: 'Tarea asignada correctamente',
-            tarea
+    if (!Types.ObjectId.isValid(id) || !Types.ObjectId.isValid(responsableId)) {
+        res.status(400).json({
+            ok: false,
+            msg: 'ID de tarea o responsable no válido.'
         });
-
+        return;
+    }
+    try {
+        const tareaAsignada = await Tarea.findByIdAndUpdate(
+            id,
+            { responsable: responsableId, estado: 'ASIGNADA' },
+            { new: true }
+        ).populate('responsable', 'nombre');
     } catch (error) {
         console.error(error);
         res.status(500).json({
@@ -188,58 +444,31 @@ export const assignTask = async (req: Request, res: Response) => {
             msg: 'Error al asignar la tarea. Hable con el administrador.'
         });
     }
-};
-// Controlador para obtener las tareas asignadas a un usuario específico
-export const getTasksByUser = async (req: Request, res: Response) => {
-    const { userId } = req.params;
-    try {
-        const tareas = await Tarea.find({ responsable: userId })
-            .populate('menu_id', 'nombre descripcion')
-            .populate('responsable', 'username rol');
-        res.status(200).json({
-            ok: true,
-            tareas
-        });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({
+}
+// 10. ELIMINAR TAREA
+export const deleteTarea = async (req: IRequest, res: Response) => {
+    const { id } = req.params;
+    if (!Types.ObjectId.isValid(id)) { 
+        res.status(400).json({
             ok: false,
-            msg: 'Error al obtener las tareas. Hable con el administrador.'
+            msg: 'ID de tarea no válido.'   
         });
-    }   
-};
-
-// Controlador para eliminar una tarea (solo accesible para Admin y Regente)
-export const deleteTask = async (req: Request, res: Response) => {
-    const { id } = req.body; // Ahora el ID viene en el cuerpo
-
+        return;
+    }
     try {
-        // Encontrar la tarea para obtener el ID del menú antes de eliminarla
-        const tareaEliminada = await Tarea.findById(id);
-
+        const tareaEliminada = await Tarea.findByIdAndDelete(id);
         if (!tareaEliminada) {
-            return res.status(404).json({
+            res.status(404).json({
                 ok: false,
-                msg: 'Tarea no encontrada'
+                msg: 'Tarea no encontrada.'
             });
+            return;
         }
-
-        // Eliminar la referencia de la tarea en el menú asociado
-        await Menu.findByIdAndUpdate(
-            tareaEliminada.menu_id,
-            { $pull: { tarea: tareaEliminada._id } },
-            { new: true }
-        );
-
-        // Ahora sí, eliminar la tarea de la base de datos
-        await Tarea.findByIdAndDelete(id);
-
         res.status(200).json({
             ok: true,
-            msg: 'Tarea eliminada correctamente',
-            id_tarea_eliminada: id // Agregamos el ID de la tarea eliminada en su propio campo
+            msg: 'Tarea eliminada exitosamente.',
+            tarea: tareaEliminada
         });
-
     } catch (error) {
         console.error(error);
         res.status(500).json({
@@ -247,4 +476,4 @@ export const deleteTask = async (req: Request, res: Response) => {
             msg: 'Error al eliminar la tarea. Hable con el administrador.'
         });
     }
-};
+}
