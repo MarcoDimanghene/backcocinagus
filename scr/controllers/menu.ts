@@ -137,7 +137,7 @@ export const loadMenu = async (req: Request, res: Response) => {
             return;
         }
         const nuevasTareas= [];
-        for (const tareaOriginal of menuTemplate.tarea as any[]) {
+        for (const tareaOriginal of (menuTemplate as any).tarea as any[]) {
             const nuevaTarea = new Tarea({
                 nombre: tareaOriginal.nombre,
                 descripcion: tareaOriginal.descripcion,
