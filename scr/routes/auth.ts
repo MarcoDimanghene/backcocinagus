@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { check } from 'express-validator';
 
-import { createUser, loginUser, renewToken, changePassword, deleteUser, changeState, editUser } from "../controllers/auth";
+import { createUser, loginUser, renewToken, changePassword, deleteUser, changeState, editUser, getAllUsers } from "../controllers/auth";
 import { validarJWT } from "../middleware/validarJWT";
 import { validarRol } from "../middleware/validarRol";
 import { recolectarErrores } from "../middleware/recolectarErrores";
@@ -76,5 +76,10 @@ router.patch(
     ],
     editUser
 );
+router.get('/getAllUsers', [
+    validarJWT,
+    validarRol('admin', 'regente'),
+    recolectarErrores
+], getAllUsers);
 
 export default router;

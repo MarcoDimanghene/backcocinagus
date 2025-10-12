@@ -185,3 +185,24 @@ export const editUser = async (req: Request, res: Response) =>{
         res.json({message: "Error al modificar usuario"})
     }
 }
+export const getAllUsers = async (req: IRequest, res: Response) => {
+    try {
+        // Obtenemos todos los usuarios, excluyendo el hash de la contraseña por seguridad
+        const usuarios = await User.find()
+            .select('-passwordHash') 
+            .sort({ username: 1 }); // Opcional: ordenar por nombre de usuario
+            
+        res.status(200).json({
+            ok: true,
+            msg: "Listado de usuarios obtenido.",
+            usuarios // Devolvemos el array de usuarios
+        });
+        
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({
+            ok: false,
+            msg: 'Error al obtener los usuarios. Hable con el administrador.'
+        });
+    }  
+}
