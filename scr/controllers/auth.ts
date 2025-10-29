@@ -58,6 +58,7 @@ export const loginUser = async (req: Request, res: Response) => {
         res.json({
             ok: true,
             uid: usuario.id,
+            rol: usuario.rol,
             token
         });
 
