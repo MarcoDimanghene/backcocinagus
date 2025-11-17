@@ -59,6 +59,7 @@ export const loginUser = async (req: Request, res: Response) => {
             ok: true,
             uid: usuario.id,
             rol: usuario.rol,
+            username: usuario.username,
             token
         });
 
